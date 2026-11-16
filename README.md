@@ -1,5 +1,9 @@
 # 8bf-host
 
+This fork adds macOS compatibility fixes and reusable worker sessions for the
+Photon Echo project. See [fork changes and verified limitations](docs/photon-echo-fork.md).
+Upstream documentation follows below.
+
 ![A plasma ball photo, unfiltered on the left and through Retrotastical's arcade CRT look on the right](docs/images/hero.png)
 
 8bf-host runs Photoshop-compatible filter plug-ins (`.8bf` files) without Photoshop. It has two front ends: a command line that filters image files, and an HTTP server that filters images sent to it. It runs on Linux, Windows and macOS. On Linux, Windows filters run under Wine.

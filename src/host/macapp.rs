@@ -4,14 +4,15 @@
 //! process has an `NSApplication` that may come to the front, which a
 //! command-line program does not set up by itself.
 
-/// Creates and activates the shared `NSApplication`. Safe to call twice.
+/// Creates the shared `NSApplication`; activates it only when requested. Safe to call twice.
 ///
 /// Returns false on other platforms, or when AppKit is unavailable.
 #[cfg(target_os = "macos")]
-pub fn ensure_application() -> bool {
+pub fn ensure_application(activate: bool) -> bool {
     use std::ffi::{c_char, c_void};
 
     const ACTIVATION_POLICY_REGULAR: isize = 0;
+    const ACTIVATION_POLICY_ACCESSORY: isize = 1;
 
     #[link(name = "objc")]
     extern "C" {
@@ -43,21 +44,48 @@ pub fn ensure_application() -> bool {
         send_long(
             app,
             sel_registerName(c"setActivationPolicy:".as_ptr()),
-            ACTIVATION_POLICY_REGULAR,
+            if activate {
+                ACTIVATION_POLICY_REGULAR
+            } else {
+                ACTIVATION_POLICY_ACCESSORY
+            },
         );
-        send_bool(
-            app,
-            sel_registerName(c"activateIgnoringOtherApps:".as_ptr()),
-            true,
-        );
+        if activate {
+            send_bool(
+                app,
+                sel_registerName(c"activateIgnoringOtherApps:".as_ptr()),
+                true,
+            );
+        }
     }
     true
 }
 
-/// Creates and activates the shared `NSApplication`. Safe to call twice.
+/// Creates the shared `NSApplication`; activates it only when requested. Safe to call twice.
 ///
 /// Returns false on other platforms, or when AppKit is unavailable.
 #[cfg(not(target_os = "macos"))]
-pub fn ensure_application() -> bool {
+pub fn ensure_application(_activate: bool) -> bool {
     false
 }
+
+/// Let ordinary Cocoa callbacks finish before a synchronous filter starts.
+#[cfg(target_os = "macos")]
+pub fn service_events(milliseconds: u64) {
+    use std::ffi::c_void;
+    use std::time::{Duration, Instant};
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
+        static kCFRunLoopDefaultMode: *const c_void;
+        fn CFRunLoopRunInMode(mode: *const c_void, seconds: f64, return_after_source: u8) -> i32;
+    }
+    let deadline = Instant::now() + Duration::from_millis(milliseconds.min(10_000));
+    while Instant::now() < deadline {
+        unsafe {
+            CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.05, 1);
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+#[cfg(not(target_os = "macos"))]
+pub fn service_events(_milliseconds: u64) {}

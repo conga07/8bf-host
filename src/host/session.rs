@@ -1601,12 +1601,22 @@ fn run_selectors(
     let parameters = unsafe { (*state).parameters };
     with_core((), |core| core.record().parameters = parameters);
 
-    if show_ui || parameters.is_null() {
+    // A saved parameter block does not initialize a fresh module's private data.
+    // Dehancer requires Parameters even during silent descriptor playback.
+    if show_ui || parameters.is_null() || unsafe { (*state).data == 0 } {
         let result = unsafe { call_selector(module, core, state, c::SELECTOR_PARAMETERS) };
         check(result, "setup")?;
         unsafe { (*state).parameters = record_parameters() };
     }
 
+    if !show_ui {
+        if let Some(milliseconds) = std::env::var("EIGHTBF_RESEARCH_WARMUP_MS")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+        {
+            super::macapp::service_events(milliseconds);
+        }
+    }
     let result = unsafe { call_selector(module, core, state, c::SELECTOR_PREPARE) };
     check(result, "prepare")?;
     unsafe { (*state).parameters = record_parameters() };

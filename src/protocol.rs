@@ -361,6 +361,19 @@ fn respond(dir: &Path, result: &FilterResult) -> i32 {
 /// Progress goes to `progress` as `PROGRESS <done> <total>` lines; host log
 /// lines go to stderr.
 pub fn run_job(request_path: &Path, progress: Box<dyn Write>) -> i32 {
+    run_job_with_host(request_path, progress, &mut FilterHost::new())
+}
+
+/// Runs a worker request using an existing host on the calling thread.
+///
+/// Keeps loaded modules and plug-in private data between jobs. Like `run_job`,
+/// this writes response files and returns a worker exit code. Cocoa filters
+/// must be invoked on the main thread.
+pub fn run_job_with_host(
+    request_path: &Path,
+    progress: Box<dyn Write>,
+    host: &mut FilterHost,
+) -> i32 {
     let request_path = std::path::absolute(request_path).unwrap_or(request_path.to_path_buf());
     let dir = request_path
         .parent()
@@ -385,8 +398,7 @@ pub fn run_job(request_path: &Path, progress: Box<dyn Write>) -> i32 {
             )
         }
     };
-    crate::host::macapp::ensure_application();
-    let mut host = FilterHost::new();
+    crate::host::macapp::ensure_application(job.show_ui || job.action == Action::About);
     let log: Box<dyn FnMut(&str)> = Box::new(|line| eprintln!("{line}"));
     if job.action == Action::About {
         let result = host.about(&job.plugin, job.parent_window, log, job.arch.as_deref());

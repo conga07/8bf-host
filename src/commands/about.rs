@@ -31,7 +31,7 @@ pub fn run(global: &GlobalArgs, args: &AboutArgs) -> Result<()> {
     };
     let result = match plan.placement {
         Placement::InProcess => {
-            crate::host::macapp::ensure_application();
+            crate::host::macapp::ensure_application(true);
             FilterHost::new().about(&info, 0, Box::new(log), Some(&plan.arch))
         }
         Placement::Worker { .. } => {

@@ -304,7 +304,116 @@ mod global {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+mod global {
+    use crate::host::constants as c;
+    use std::ffi::c_void;
+    type Handle = *mut c_void;
+    #[link(name = "CoreServices", kind = "framework")]
+    extern "C" {
+        fn RecoverHandle(pointer: *mut c_void) -> Handle;
+        fn GetHandleSize(handle: Handle) -> isize;
+        fn SetHandleSize(handle: Handle, size: isize);
+        fn DisposeHandle(handle: Handle);
+        fn HLock(handle: Handle);
+        fn HUnlock(handle: Handle);
+        fn MemError() -> i16;
+    }
+    extern "C" {
+        static mach_task_self_: u32;
+        fn mach_vm_read_overwrite(
+            task: u32,
+            address: u64,
+            size: u64,
+            data: u64,
+            copied: *mut u64,
+        ) -> i32;
+        fn malloc_zone_from_ptr(pointer: *const c_void) -> *mut c_void;
+    }
+    fn owns(handle: Handle) -> bool {
+        if handle.is_null() {
+            return false;
+        }
+        let mut pointer: *mut c_void = std::ptr::null_mut();
+        let mut copied = 0;
+        // Read the master pointer through Mach so invalid handles fail without a fault.
+        unsafe {
+            if mach_vm_read_overwrite(
+                mach_task_self_,
+                handle as u64,
+                std::mem::size_of_val(&pointer) as u64,
+                &mut pointer as *mut _ as u64,
+                &mut copied,
+            ) != 0
+                || copied != std::mem::size_of_val(&pointer) as u64
+                || pointer.is_null()
+                || malloc_zone_from_ptr(pointer).is_null()
+            {
+                return false;
+            }
+            // Carbon owns a handle only when its own reverse lookup agrees.
+            RecoverHandle(pointer) == handle
+        }
+    }
+    pub fn size(handle: Handle) -> i32 {
+        if !owns(handle) {
+            return 0;
+        }
+        unsafe { i32::try_from(GetHandleSize(handle)).unwrap_or(0) }
+    }
+    pub fn dispose(handle: Handle) -> bool {
+        if !owns(handle) {
+            return false;
+        }
+        unsafe {
+            DisposeHandle(handle);
+        }
+        true
+    }
+    pub fn set_size(handle: Handle, size: usize) -> i16 {
+        if !owns(handle) {
+            return c::NIL_HANDLE_ERR;
+        }
+        let Ok(size) = isize::try_from(size) else {
+            return c::MEM_FULL_ERR;
+        };
+        unsafe {
+            SetHandleSize(handle, size);
+            MemError()
+        }
+    }
+    pub fn lock(handle: Handle) -> *mut c_void {
+        if !owns(handle) {
+            return std::ptr::null_mut();
+        }
+        unsafe {
+            HLock(handle);
+            *(handle as *mut *mut c_void)
+        }
+    }
+    pub fn unlock(handle: Handle) {
+        if owns(handle) {
+            unsafe {
+                HUnlock(handle);
+            }
+        }
+    }
+    pub fn read(handle: Handle) -> Vec<u8> {
+        let length = usize::try_from(size(handle)).unwrap_or(0);
+        if length == 0 || length > super::MAX_ALLOCATION {
+            return Vec::new();
+        }
+        let pointer = lock(handle);
+        if pointer.is_null() {
+            return Vec::new();
+        }
+        let result = unsafe { std::slice::from_raw_parts(pointer.cast::<u8>(), length).to_vec() };
+        unlock(handle);
+        result
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 mod global {
     use std::ffi::c_void;
 
@@ -444,6 +553,28 @@ impl BlockAllocator {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn foreign_carbon_handles_round_trip() {
+        #[link(name = "CoreServices", kind = "framework")]
+        extern "C" {
+            fn NewHandle(size: isize) -> Handle;
+        }
+        let mut handles = HandleManager::new();
+        let handle = unsafe { NewHandle(6) };
+        assert!(!handle.is_null());
+        unsafe {
+            std::ptr::copy_nonoverlapping(b"state\0".as_ptr(), *(handle as *mut *mut u8), 6);
+        }
+        assert!(!handles.contains(handle));
+        assert_eq!(handles.size(handle), 6);
+        assert_eq!(handles.read(handle), b"state\0");
+        assert_eq!(handles.write(handle, b"changed\0"), c::NO_ERR);
+        assert_eq!(handles.read(handle), b"changed\0");
+        assert!(handles.dispose(handle));
+        assert!(handles.read(0x1234usize as Handle).is_empty());
+    }
 
     #[test]
     fn handles_have_real_master_pointers() {

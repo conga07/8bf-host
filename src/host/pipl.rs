@@ -422,14 +422,25 @@ pub struct RawProperty<'a> {
 /// implausible, or a property runs past the end of the data.
 pub fn parse_properties(data: &[u8], order: ByteOrder) -> Result<Vec<RawProperty<'_>>, PiPLError> {
     let too_short = || PiPLError("PiPL resource is too short".into());
-    if data.len() < HEADER_SIZE {
+    if data.len() < 8 {
         return Err(too_short());
     }
-    let signature = read_array(data, 0)
-        .map(|bytes| order.u16_from(bytes) as i16)
-        .ok_or_else(too_short)?;
-    let version = read_u32(data, 2, order).ok_or_else(too_short)? as i32;
-    let count = read_u32(data, 6, order).ok_or_else(too_short)? as i32;
+    // Native Mac PiPL resources omit the Windows 16-bit signature.
+    let native_mac = order == ByteOrder::Big && read_u32(data, 0, order) == Some(0);
+    if !native_mac && data.len() < HEADER_SIZE {
+        return Err(too_short());
+    }
+    let header_size = if native_mac { 8 } else { HEADER_SIZE };
+    let signature = if native_mac {
+        PIPL_SIGNATURE
+    } else {
+        read_array(data, 0)
+            .map(|bytes| order.u16_from(bytes) as i16)
+            .ok_or_else(too_short)?
+    };
+    let version =
+        read_u32(data, if native_mac { 0 } else { 2 }, order).ok_or_else(too_short)? as i32;
+    let count = read_u32(data, if native_mac { 4 } else { 6 }, order).ok_or_else(too_short)? as i32;
     if signature != PIPL_SIGNATURE || version != PIPL_VERSION {
         return Err(PiPLError(format!(
             "unsupported PiPL header (signature {signature}, version {version})"
@@ -442,7 +453,7 @@ pub fn parse_properties(data: &[u8], order: ByteOrder) -> Result<Vec<RawProperty
     let truncated = || PiPLError("PiPL property list is truncated".into());
     let overrun = || PiPLError("PiPL property overruns the resource".into());
     let mut properties = Vec::new();
-    let mut pos = HEADER_SIZE;
+    let mut pos = header_size;
     for _ in 0..count {
         let Some(header) = data
             .get(pos..)
@@ -627,6 +638,15 @@ mod tests {
 
     fn build_le(properties: &[(u32, Vec<u8>)]) -> Vec<u8> {
         build_pipl(properties, ByteOrder::Little)
+    }
+
+    #[test]
+    fn native_mac_resource_omits_windows_signature() {
+        let wrapped = build_pipl(&sample_properties(ByteOrder::Big), ByteOrder::Big);
+        let native = parse_pipl(&wrapped[2..], ByteOrder::Big, Some(16000)).unwrap();
+        let reference = parse_pipl(&wrapped, ByteOrder::Big, Some(16000)).unwrap();
+        assert_eq!(native, reference);
+        assert!(parse_pipl(&wrapped[2..], ByteOrder::Little, None).is_err());
     }
 
     #[test]
